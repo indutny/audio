@@ -1,0 +1,33 @@
+{
+  "name": "audio",
+  "version": "0.0.0",
+  "description": "Audio playback/recording bindings",
+  "main": "lib/audio.js",
+  "scripts": {
+    "test": "mocha --reporter spec test/*-test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:indutny/audio"
+  },
+  "keywords": [
+    "audio",
+    "playback",
+    "recording",
+    "microphone",
+    "echo",
+    "cancellation"
+  ],
+  "author": "Fedor Indutny <fedor@indutny.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/indutny/audio/issues"
+  },
+  "homepage": "https://github.com/indutny/audio",
+  "dependencies": {
+    "bindings": "~1.1.1"
+  },
+  "devDependencies": {
+    "mocha": "~1.17.1"
+  }
+}
