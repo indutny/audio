@@ -11,24 +11,21 @@ namespace audio {
 
 class PlatformUnit : public Unit {
  public:
-  PlatformUnit(double sample_rate);
+  PlatformUnit();
   ~PlatformUnit();
 
   void Start();
   void Stop();
   void QueueForPlayback(const unsigned char* data, size_t size);
-  int GetChannelCount(Side side);
+  size_t GetChannelCount(Side side);
+  double GetHWSampleRate(Unit::Side side);
 
  protected:
-  static const int kSampleSize = sizeof(float);
-
   static AudioDeviceID GetDevice();
   static AudioDeviceID GetDevice(Side side);
   static AudioDeviceID GetPlugin();
   static CFMutableDictionaryRef GetAggregateDictionary();
   static CFStringRef GetDeviceUID(AudioDeviceID device);
-  static double GetSampleRate();
-  static double GetSampleRate(Unit::Side side);
   static void AddSubdevices(AudioDeviceID aggr,
                             AudioDeviceID in,
                             AudioDeviceID out);
@@ -47,8 +44,8 @@ class PlatformUnit : public Unit {
                                  AudioBufferList* list);
 
   AudioUnit unit_;
-  int in_channels_;
-  int out_channels_;
+  size_t in_channels_;
+  size_t out_channels_;
   AudioBufferList* buffer_;
 
   static double sample_rate_in_;

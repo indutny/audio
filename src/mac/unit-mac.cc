@@ -14,8 +14,7 @@ AudioDeviceID PlatformUnit::plugin_ = kAudioObjectUnknown;
 AudioDeviceID PlatformUnit::aggregate_ = kAudioObjectUnknown;
 
 
-PlatformUnit::PlatformUnit(double sample_rate) : in_channels_(0),
-                                                 out_channels_(0) {
+PlatformUnit::PlatformUnit() : in_channels_(0), out_channels_(0) {
   // Find Remote IO audio component
   AudioComponentDescription desc;
 
@@ -61,7 +60,6 @@ PlatformUnit::PlatformUnit(double sample_rate) : in_channels_(0),
   // IMPORTANT NOTE:
   // Elements are reversed here, because we are setting a format of their
   // sources.
-  ASSERT(kSampleSize == sizeof(Float32), "Huh float is not 4 bytes?");
   for (size_t i = 0; i < ARRAY_SIZE(scopes); i++) {
     AudioStreamBasicDescription desc;
     UInt32 size = sizeof(desc);
@@ -82,14 +80,16 @@ PlatformUnit::PlatformUnit(double sample_rate) : in_channels_(0),
       out_channels_ = desc.mChannelsPerFrame;
 
     // Set the rest of format
-    desc.mSampleRate = sample_rate;
+    desc.mSampleRate = kSampleRate;
     desc.mFormatID = kAudioFormatLinearPCM;
-    desc.mFormatFlags = kAudioFormatFlagsNativeFloatPacked |
+    desc.mFormatFlags = kAudioFormatFlagsNativeEndian |
+                        kAudioFormatFlagIsSignedInteger |
+                        kAudioFormatFlagIsPacked |
                         kAudioFormatFlagIsNonInterleaved;
     desc.mBytesPerPacket = kSampleSize;
     desc.mFramesPerPacket = 1;
     desc.mBytesPerFrame = kSampleSize;
-    desc.mBitsPerChannel = 32;
+    desc.mBitsPerChannel = kSampleSize * 8;
     desc.mReserved = 0;
 
     err = AudioUnitSetProperty(unit_,
@@ -99,6 +99,16 @@ PlatformUnit::PlatformUnit(double sample_rate) : in_channels_(0),
                                &desc,
                                sizeof(desc));
     OSERR_CHECK(err, "Failed to set input/output format");
+
+    // Set buffer size
+    UInt32 chunk_size = kChunkSize;
+    err = AudioUnitSetProperty(unit_,
+                               kAudioDevicePropertyBufferFrameSize,
+                               scopes[i],
+                               elems[i] == 0 ? 1 : 0,
+                               &chunk_size,
+                               sizeof(chunk_size));
+    OSERR_CHECK(err, "Failed to set buffer frame size");
   }
 
   // Set callbacks
@@ -129,17 +139,20 @@ PlatformUnit::PlatformUnit(double sample_rate) : in_channels_(0),
   OSERR_CHECK(err, "Failed to initialize AudioUnit");
 
   // Allocate buffer
-  int input_channels = GetChannelCount(kInput);
+  size_t input_channels = GetChannelCount(kInput);
   size_t buffer_size = sizeof(*buffer_) + input_channels * sizeof(AudioBuffer);
 
   buffer_ = reinterpret_cast<AudioBufferList*>(new char[buffer_size]);
   buffer_->mNumberBuffers = input_channels;
+
+  // Initialize common unit
+  Init();
 }
 
 
 PlatformUnit::~PlatformUnit() {
   AudioComponentInstanceDispose(unit_);
-  delete buffer_;
+  delete[] buffer_;
 }
 
 
@@ -159,7 +172,7 @@ void PlatformUnit::QueueForPlayback(const unsigned char* data, size_t size) {
 }
 
 
-int PlatformUnit::GetChannelCount(Unit::Side side) {
+size_t PlatformUnit::GetChannelCount(Unit::Side side) {
   if (side == kInput)
     return in_channels_;
   else
@@ -175,30 +188,35 @@ OSStatus PlatformUnit::InputCallback(void* arg,
                                      AudioBufferList* list) {
   PlatformUnit* unit = reinterpret_cast<PlatformUnit*>(arg);
 
+  ASSERT(list == NULL, "Given unexpected list!");
   list = unit->buffer_;
-  for (UInt32 i = 0; i < list->mNumberBuffers; i++) {
-    AudioBuffer* buf = &list->mBuffers[i];
 
-    buf->mNumberChannels = 1;
-    buf->mData = unit->PrepareInput(i, frame_count);
-    buf->mDataByteSize = frame_count * kSampleSize;
+  size_t frames_left = frame_count;
+  while (frames_left != 0) {
+    size_t avail = 0;
+    for (UInt32 i = 0; i < list->mNumberBuffers; i++) {
+      avail = frames_left;
+      AudioBuffer* buf = &list->mBuffers[i];
+
+      buf->mNumberChannels = 1;
+      buf->mData = unit->PrepareInput(i, &avail);
+      buf->mDataByteSize = avail * kSampleSize;
+    }
+
+    OSStatus err = AudioUnitRender(unit->unit_,
+                                   flags,
+                                   ts,
+                                   bus,
+                                   avail,
+                                   list);
+    fprintf(stdout, "%d %d\n", avail, err);
+    if (err != noErr)
+      return err;
+
+    // Commit input for every channel
+    unit->CommitInput(avail);
+    frames_left -= avail;
   }
-
-  OSStatus err = AudioUnitRender(unit->unit_,
-                                 flags,
-                                 ts,
-                                 bus,
-                                 frame_count,
-                                 list);
-
-  // AU has prevented a lockup?
-  if (err == kAudioUnitErr_CannotDoInCurrentContext)
-    return err;
-  else if (err != noErr)
-    return err;
-
-  // Commit input for every channel
-  unit->CommitInput(frame_count);
 
   return noErr;
 }
@@ -217,7 +235,7 @@ OSStatus PlatformUnit::RenderCallback(void* arg,
     AudioBuffer* buf = &list->mBuffers[i];
 
     unit->RenderOutput(i,
-                       reinterpret_cast<float*>(buf->mData),
+                       reinterpret_cast<int16_t*>(buf->mData),
                        buf->mDataByteSize / kSampleSize);
   }
 
@@ -225,17 +243,7 @@ OSStatus PlatformUnit::RenderCallback(void* arg,
 }
 
 
-double PlatformUnit::GetSampleRate() {
-  double in = GetSampleRate(kInput);
-  double out = GetSampleRate(kOutput);
-
-  ASSERT(in == out, "Sample rate mismatch between input and output");
-
-  return in;
-}
-
-
-double PlatformUnit::GetSampleRate(Unit::Side side) {
+double PlatformUnit::GetHWSampleRate(Unit::Side side) {
   double* sample_rate;
 
   sample_rate = side == kInput ? &sample_rate_in_ : &sample_rate_out_;
