@@ -48,14 +48,10 @@ void Unit::Init() {
 
   // Add some latency
   static int16_t latency[kChunkSize];
-
   for (size_t i = 0; i < kChannelCount; i++) {
-    PaUtil_WriteRingBuffer(&ring_out_[i], latency, kChunkSize);
-    PaUtil_WriteRingBuffer(&ring_out_[i], latency, kChunkSize);
-    PaUtil_WriteRingBuffer(&ring_out_[i], latency, kChunkSize);
-    PaUtil_WriteRingBuffer(&ring_out_[i], latency, kChunkSize);
-    PaUtil_WriteRingBuffer(&ring_out_[i], latency, kChunkSize);
-    PaUtil_WriteRingBuffer(&ring_out_[i], latency, kChunkSize);
+    PaUtil_WriteRingBuffer(&ring_out_[i],
+                           latency,
+                           ARRAY_SIZE(latency));
   }
 
   // Initialize QMF filter states
@@ -173,19 +169,11 @@ void Unit::FlushInput() {
 
 void Unit::RenderOutput(size_t channel, int16_t* out, size_t size) {
   ring_buffer_size_t avail;
-  int16_t* to = out;
-  size_t left = size;
-
-  do {
-    avail = PaUtil_ReadRingBuffer(&ring_out_[channel], to, left);
-    to += avail;
-    left -= avail;
-  } while (avail < left &&
-           PaUtil_GetRingBufferReadAvailable(&aec_in_[channel]) >= 2 * kChunkSize);
+  avail = PaUtil_ReadRingBuffer(&ring_out_[channel], out, size);
 
   // Zero-ify rest
-  for (size_t i = 0; i < left; i++)
-    to[i] = 0.0;
+  for (size_t i = avail; i < size; i++)
+    out[i] = out[i - avail];
 
   // Notify AEC thread about write
   PaUtil_WriteRingBuffer(&aec_out_[channel], out, size);
@@ -225,7 +213,6 @@ void Unit::DoAEC() {
       // Feed capture data into AEC
       PaUtil_ReadRingBuffer(&aec_in_[i], buf, 2 * kChunkSize);
 
-      /*
       // Split signal
       WebRtcSpl_AnalysisQMF(buf,
                             2 * kChunkSize,
@@ -242,7 +229,7 @@ void Unit::DoAEC() {
                                     out_h,
                                     kChunkSize,
                                     0,
-                                    0),
+                                    kChunkSize),
              "Failed to queue AEC near end");
 
       // Join signal
@@ -253,9 +240,8 @@ void Unit::DoAEC() {
                              filt1_[i],
                              filt2_[i]);
 
-                            */
       // Write it out
-      PaUtil_WriteRingBuffer(&ring_out_[i], buf, kChunkSize);
+      PaUtil_WriteRingBuffer(&ring_in_[i], buf, 2 * kChunkSize);
     }
   }
 
