@@ -154,7 +154,8 @@ PlatformUnit::PlatformUnit() : in_channels_(0), out_channels_(0) {
 
 PlatformUnit::~PlatformUnit() {
   // Stop AU
-  Stop();
+  if (running_)
+    Stop();
 
   AudioComponentInstanceDispose(unit_);
   DestroyBuffer(buffer_);
@@ -163,14 +164,22 @@ PlatformUnit::~PlatformUnit() {
 
 
 void PlatformUnit::Start() {
+  if (running_)
+    return;
+
   OSStatus err = AudioOutputUnitStart(unit_);
   OSERR_CHECK(err, "Failed to start AudioUnit");
+  running_ = true;
 }
 
 
 void PlatformUnit::Stop() {
+  if (!running_)
+    return;
+
   OSStatus err = AudioOutputUnitStop(unit_);
   OSERR_CHECK(err, "Failed to stop AudioUnit");
+  running_ = false;
 }
 
 

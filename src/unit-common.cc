@@ -15,7 +15,7 @@ using namespace v8;
 
 namespace audio {
 
-Unit::Unit() : on_incoming_(NULL), destroying_(false) {
+Unit::Unit() : on_incoming_(NULL), running_(false), destroying_(false) {
 }
 
 
@@ -66,9 +66,6 @@ void Unit::Init() {
          "uv_async_init");
   ASSERT(0 == uv_thread_create(&aec_thread_, AECThread, this),
          "uv_thread_create");
-
-  // Start AU
-  Start();
 }
 
 
@@ -98,6 +95,11 @@ Unit::~Unit() {
 
   uv_sem_destroy(&aec_sem_);
   uv_close(reinterpret_cast<uv_handle_t*>(aec_async_), CloseCb);
+
+  for (size_t i = 0; i < kChannelCount; i++) {
+    ASSERT(0 == WebRtcAec_Free(aec_[i]), "Failed to free AEC");
+    ASSERT(0 == WebRtcNs_Free(ns_[i]), "Failed to free NS");
+  }
 }
 
 
@@ -106,7 +108,9 @@ void Unit::Initialize(Handle<Object> target) {
   Local<FunctionTemplate> tpl = FunctionTemplate::New(Unit::New);
   tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
-  NODE_SET_PROTOTYPE_METHOD(tpl, "play", Unit::QueueForPlayback);
+  NODE_SET_PROTOTYPE_METHOD(tpl, "start", Unit::Start);
+  NODE_SET_PROTOTYPE_METHOD(tpl, "stop", Unit::Stop);
+  NODE_SET_PROTOTYPE_METHOD(tpl, "play", Unit::Play);
 
   target->Set(String::NewSymbol("Unit"), tpl->GetFunction());
 }
@@ -122,7 +126,27 @@ Handle<Value> Unit::New(const Arguments &args) {
 }
 
 
-Handle<Value> Unit::QueueForPlayback(const Arguments &args) {
+Handle<Value> Unit::Start(const Arguments &args) {
+  HandleScope scope;
+  Unit* unit = ObjectWrap::Unwrap<Unit>(args.This());
+
+  unit->Start();
+
+  return scope.Close(Undefined());
+}
+
+
+Handle<Value> Unit::Stop(const Arguments &args) {
+  HandleScope scope;
+  Unit* unit = ObjectWrap::Unwrap<Unit>(args.This());
+
+  unit->Stop();
+
+  return scope.Close(Undefined());
+}
+
+
+Handle<Value> Unit::Play(const Arguments &args) {
   HandleScope scope;
   Unit* unit = ObjectWrap::Unwrap<Unit>(args.This());
 

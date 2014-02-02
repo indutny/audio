@@ -8,7 +8,8 @@ describe('Audio binding', function() {
     var u = new Unit();
 
     u.start();
-    u.queueForPlayback(0, new Buffer(1024));
+    u.play(0, new Buffer(1024));
+    u.oninput = function() {};
     setTimeout(function() {
       u.stop();
     }, 5000);

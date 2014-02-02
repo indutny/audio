@@ -41,7 +41,9 @@ class Unit : public node::ObjectWrap {
   static const int kChannelCount = 2;
 
   static v8::Handle<v8::Value> New(const v8::Arguments &args);
-  static v8::Handle<v8::Value> QueueForPlayback(const v8::Arguments &args);
+  static v8::Handle<v8::Value> Start(const v8::Arguments &args);
+  static v8::Handle<v8::Value> Stop(const v8::Arguments &args);
+  static v8::Handle<v8::Value> Play(const v8::Arguments &args);
 
   void CommitInput(size_t channel, const int16_t* in, size_t size);
   void FlushInput();
@@ -58,6 +60,7 @@ class Unit : public node::ObjectWrap {
   PaUtilRingBuffer aec_out_[kChannelCount];
   PaUtilRingBuffer ring_in_[kChannelCount];
   PaUtilRingBuffer ring_out_[kChannelCount];
+  bool running_;
 
   // AEC
   void* aec_[kChannelCount];
