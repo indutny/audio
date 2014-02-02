@@ -8,8 +8,47 @@
 #include "uv.h"
 
 #include <stdint.h>
+#include <stdint.h>
 
 namespace audio {
+
+// Forward declaration
+class Unit;
+
+class Channel {
+ public:
+  Channel();
+  ~Channel();
+
+  void Init(Unit* unit);
+
+  void Cycle(ring_buffer_size_t avail_in, ring_buffer_size_t avail_out);
+
+  // IO
+  struct {
+    PaUtilRingBuffer in;
+    PaUtilRingBuffer out;
+    void* handle;
+  } aec_;
+  struct {
+    PaUtilRingBuffer in;
+    PaUtilRingBuffer out;
+  } io_;
+
+  // AEC
+  struct {
+    int32_t a_lo[6];
+    int32_t a_hi[6];
+    int32_t s_lo[6];
+    int32_t s_hi[6];
+  } filters_;
+
+  // NS
+  NsHandle* ns_;
+
+ protected:
+  static const int kBufferCapacity = 16 * 1024;  // in samples
+};
 
 class Unit : public node::ObjectWrap {
  public:
@@ -33,11 +72,11 @@ class Unit : public node::ObjectWrap {
 
   inline void on_incoming(IncomingCallback cb) { on_incoming_ = cb; }
 
- protected:
   static const int kSampleRate = 16000;
   static const int kSampleSize = sizeof(int16_t);
   static const int kChunkSize = 160;
-  static const int kBufferCapacity = 16 * 1024;  // in samples
+
+ protected:
   static const int kChannelCount = 2;
 
   static v8::Handle<v8::Value> New(const v8::Arguments &args);
@@ -56,27 +95,14 @@ class Unit : public node::ObjectWrap {
 
   IncomingCallback on_incoming_;
 
-  PaUtilRingBuffer aec_in_[kChannelCount];
-  PaUtilRingBuffer aec_out_[kChannelCount];
-  PaUtilRingBuffer ring_in_[kChannelCount];
-  PaUtilRingBuffer ring_out_[kChannelCount];
+  Channel channels_[kChannelCount];
   bool running_;
 
   // AEC
-  void* aec_[kChannelCount];
-  struct {
-    int32_t a_lo[kChannelCount][6];
-    int32_t a_hi[kChannelCount][6];
-    int32_t s_lo[kChannelCount][6];
-    int32_t s_hi[kChannelCount][6];
-  } filters_;
   uv_sem_t aec_sem_;
   uv_async_t* aec_async_;
   uv_thread_t aec_thread_;
   volatile bool destroying_;
-
-  // NS
-  NsHandle* ns_[kChannelCount];
 };
 
 }  // namespace audio

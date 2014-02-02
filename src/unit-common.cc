@@ -20,8 +20,6 @@ Unit::Unit() : on_incoming_(NULL), running_(false), destroying_(false) {
 
 
 void Unit::Init() {
-  PaUtilRingBuffer* rings[] = { aec_in_, aec_out_, ring_in_, ring_out_ };
-
   size_t in_count = this->GetChannelCount(kInput);
   size_t out_count = this->GetChannelCount(kOutput);
   if (in_count > kChannelCount)
@@ -29,34 +27,8 @@ void Unit::Init() {
   if (out_count > kChannelCount)
     out_count = kChannelCount;
 
-  // Initialize buffers
-  for (size_t i = 0; i < ARRAY_SIZE(rings); i++) {
-    for (size_t j = 0; j < kChannelCount; j++) {
-      PaUtil_InitializeRingBuffer(&rings[i][j],
-                                  kSampleSize,
-                                  kBufferCapacity,
-                                  new char[kSampleSize * kBufferCapacity]);
-    }
-  }
-
-  for (size_t i = 0; i < kChannelCount; i++) {
-    // Initailize AEC
-    ASSERT(0 == WebRtcAec_Create(&aec_[i]), "Failed to create AEC");
-    ASSERT(0 == WebRtcAec_Init(aec_[i],
-                               kSampleRate,
-                               static_cast<int32_t>(GetHWSampleRate(kOutput))),
-           "Failed to initialize AEC");
-
-    // Initialize NS
-    ASSERT(0 == WebRtcNs_Create(&ns_[i]), "Failed to create NS");
-    ASSERT(0 == WebRtcNs_Init(ns_[i], kSampleRate / 2), "Failed to init NS");
-  }
-
-  // Initialize QMF filter states
-  memset(filters_.a_lo, 0, sizeof(filters_.a_lo));
-  memset(filters_.a_hi, 0, sizeof(filters_.a_hi));
-  memset(filters_.s_lo, 0, sizeof(filters_.s_lo));
-  memset(filters_.s_hi, 0, sizeof(filters_.s_hi));
+  for (size_t i = 0; i < ARRAY_SIZE(channels_); i++)
+    channels_[i].Init(this);
 
   // Initialize AEC thread
   ASSERT(0 == uv_sem_init(&aec_sem_, 0), "uv_sem_init");
@@ -80,26 +52,8 @@ Unit::~Unit() {
   uv_sem_post(&aec_sem_);
   uv_thread_join(&aec_thread_);
 
-  PaUtilRingBuffer* rings[] = { aec_in_, aec_out_, ring_in_, ring_out_ };
-  for (size_t i = 0; i < ARRAY_SIZE(rings); i++) {
-    for (size_t j = 0; j < kChannelCount; j++) {
-      delete[] rings[i][j].buffer;
-      rings[i][j].buffer = NULL;
-    }
-  }
-
-  for (size_t i = 0; i < kChannelCount; i++) {
-    ASSERT(0 == WebRtcAec_Free(aec_[i]), "Failed to destroy AEC");
-    aec_[i] = NULL;
-  }
-
   uv_sem_destroy(&aec_sem_);
   uv_close(reinterpret_cast<uv_handle_t*>(aec_async_), CloseCb);
-
-  for (size_t i = 0; i < kChannelCount; i++) {
-    ASSERT(0 == WebRtcAec_Free(aec_[i]), "Failed to free AEC");
-    ASSERT(0 == WebRtcNs_Free(ns_[i]), "Failed to free NS");
-  }
 }
 
 
@@ -151,7 +105,8 @@ Handle<Value> Unit::Play(const Arguments &args) {
   Unit* unit = ObjectWrap::Unwrap<Unit>(args.This());
 
   size_t channel = args[0]->IntegerValue();
-  PaUtil_WriteRingBuffer(&unit->ring_out_[channel],
+  Channel* chan = &unit->channels_[channel];
+  PaUtil_WriteRingBuffer(&chan->io_.out,
                          Buffer::Data(args[1]),
                          Buffer::Length(args[1]) / kSampleSize);
 
@@ -160,9 +115,11 @@ Handle<Value> Unit::Play(const Arguments &args) {
 
 
 void Unit::CommitInput(size_t channel, const int16_t* in, size_t size) {
+  Channel* chan = &channels_[channel];
+
   // TODO(indutny): Support output/input channel count mismatch
   // Already full, ignore
-  if (0 == PaUtil_WriteRingBuffer(&aec_in_[channel], in, size))
+  if (0 == PaUtil_WriteRingBuffer(&chan->aec_.in, in, size))
     return;
 }
 
@@ -173,15 +130,16 @@ void Unit::FlushInput() {
 
 
 void Unit::RenderOutput(size_t channel, int16_t* out, size_t size) {
+  Channel* chan = &channels_[channel];
   ring_buffer_size_t avail;
-  avail = PaUtil_ReadRingBuffer(&ring_out_[channel], out, size);
+  avail = PaUtil_ReadRingBuffer(&chan->io_.out, out, size);
 
   // Zero-ify rest
   for (size_t i = avail; i < size; i++)
     out[i] = 0;
 
   // Notify AEC thread about write
-  PaUtil_WriteRingBuffer(&aec_out_[channel], out, size);
+  PaUtil_WriteRingBuffer(&chan->aec_.out, out, size);
 }
 
 
@@ -200,66 +158,15 @@ void Unit::AECThread(void* arg) {
 
 
 void Unit::DoAEC() {
-  int16_t buf[kChunkSize];
-  ring_buffer_size_t avail_out = PaUtil_GetRingBufferReadAvailable(
-      &aec_out_[GetChannelCount(kOutput) - 1]);
-  ring_buffer_size_t avail_in = PaUtil_GetRingBufferReadAvailable(
-      &aec_in_[GetChannelCount(kInput)- 1]);
+  Channel* last_in = &channels_[GetChannelCount(kInput) - 1];
+  Channel* last_out = &channels_[GetChannelCount(kOutput) - 1];
+  ring_buffer_size_t avail_in =
+      PaUtil_GetRingBufferReadAvailable(&last_in->aec_.out);
+  ring_buffer_size_t avail_out =
+      PaUtil_GetRingBufferReadAvailable(&last_out->aec_.out);
 
-  for (size_t i = 0; i < kChannelCount; i++) {
-    ring_buffer_size_t avail;
-
-    // Feed playback data into AEC
-    if (avail_out >= kChunkSize) {
-      avail = PaUtil_ReadRingBuffer(&aec_out_[i], buf, kChunkSize);
-      ASSERT(avail == kChunkSize, "Read less than expected");
-      ASSERT(0 == WebRtcAec_BufferFarend(aec_[i], buf, kChunkSize),
-             "Failed to queue AEC far end");
-    }
-
-    if ((size_t) avail_in >= ARRAY_SIZE(buf)) {
-      // Feed capture data into AEC
-      avail = PaUtil_ReadRingBuffer(&aec_in_[i], buf, ARRAY_SIZE(buf));
-      ASSERT(avail == ARRAY_SIZE(buf), "Read less than expected");
-
-      int16_t lo[ARRAY_SIZE(buf) / 2];
-      int16_t hi[ARRAY_SIZE(lo)];
-
-      // Split signal
-      WebRtcSpl_AnalysisQMF(buf,
-                            ARRAY_SIZE(buf),
-                            lo,
-                            hi,
-                            filters_.a_lo[i],
-                            filters_.a_hi[i]);
-
-      // Apply AEC
-      ASSERT(0 == WebRtcAec_Process(aec_[i],
-                                    lo,
-                                    hi,
-                                    lo,
-                                    hi,
-                                    ARRAY_SIZE(lo),
-                                    0,
-                                    0),
-             "Failed to queue AEC near end");
-
-      // Apply NS
-      ASSERT(0 == WebRtcNs_Process(ns_[i], lo, hi, lo, hi),
-             "Failed to apply NS");
-
-      // Join signal
-      WebRtcSpl_SynthesisQMF(lo,
-                             hi,
-                             ARRAY_SIZE(lo),
-                             buf,
-                             filters_.s_lo[i],
-                             filters_.s_hi[i]);
-
-      // Write it out
-      PaUtil_WriteRingBuffer(&ring_in_[i], buf, ARRAY_SIZE(buf));
-    }
-  }
+  for (size_t i = 0; i < kChannelCount; i++)
+    channels_[i].Cycle(avail_in, avail_out);
 
   // Communicate back to the event loop
   uv_async_send(aec_async_);
@@ -276,12 +183,13 @@ void Unit::AsyncCb(uv_async_t* handle, int status) {
   size_t channels = unit->GetChannelCount(kInput);
   int16_t buf[kChunkSize];
 
-  while (PaUtil_GetRingBufferReadAvailable(
-             &unit->ring_in_[channels - 1]) > 0) {
+  Channel* last = &unit->channels_[channels - 1];
+  while (PaUtil_GetRingBufferReadAvailable(&last->io_.in) > 0) {
     for (size_t i = 0; i < channels; i++) {
       ring_buffer_size_t avail;
+      Channel* chan = &unit->channels_[i];
 
-      avail = PaUtil_ReadRingBuffer(&unit->ring_in_[i], buf, ARRAY_SIZE(buf));
+      avail = PaUtil_ReadRingBuffer(&chan->io_.in, buf, ARRAY_SIZE(buf));
       ASSERT(avail == ARRAY_SIZE(buf), "Read less than expected");
 
       Buffer* raw = Buffer::New(reinterpret_cast<char*>(buf), sizeof(buf));
@@ -290,6 +198,112 @@ void Unit::AsyncCb(uv_async_t* handle, int status) {
       Local<Value> argv[] = { Integer::New(i), buf };
       MakeCallback(unit->handle_, "oninput", ARRAY_SIZE(argv), argv);
     }
+  }
+}
+
+
+Channel::Channel() : ns_(NULL) {
+  // Clear filters for QMF
+  memset(filters_.a_lo, 0, sizeof(filters_.a_lo));
+  memset(filters_.a_hi, 0, sizeof(filters_.a_hi));
+  memset(filters_.s_lo, 0, sizeof(filters_.s_lo));
+  memset(filters_.s_hi, 0, sizeof(filters_.s_hi));
+}
+
+
+void Channel::Init(Unit* unit) {
+  // Initialize buffers
+  PaUtilRingBuffer* rings[] = { &aec_.in, &aec_.out, &io_.in, &io_.out };
+  for (size_t i = 0; i < ARRAY_SIZE(rings); i++) {
+    PaUtil_InitializeRingBuffer(rings[i],
+                                Unit::kSampleSize,
+                                kBufferCapacity,
+                                new char[Unit::kSampleSize * kBufferCapacity]);
+  }
+
+  // Initailize AEC
+  int err;
+  ASSERT(0 == WebRtcAec_Create(&aec_.handle), "Failed to create AEC");
+  err = WebRtcAec_Init(
+      aec_.handle,
+      Unit::kSampleRate,
+      static_cast<int32_t>(unit->GetHWSampleRate(Unit::kOutput)));
+  ASSERT(err == 0, "Failed to initialize AEC");
+
+  // Initialize NS
+  ASSERT(0 == WebRtcNs_Create(&ns_), "Failed to create NS");
+  ASSERT(0 == WebRtcNs_Init(ns_, Unit::kSampleRate / 2), "Failed to init NS");
+}
+
+
+Channel::~Channel() {
+  PaUtilRingBuffer* rings[] = { &aec_.in, &aec_.out, &io_.in, &io_.out };
+  for (size_t i = 0; i < ARRAY_SIZE(rings); i++) {
+    delete[] rings[i]->buffer;
+    rings[i]->buffer = NULL;
+  }
+
+  ASSERT(0 == WebRtcAec_Free(aec_.handle), "Failed to destroy AEC");
+  aec_.handle = NULL;
+
+  ASSERT(0 == WebRtcNs_Free(ns_), "Failed to free NS");
+  ns_ = NULL;
+}
+
+
+void Channel::Cycle(ring_buffer_size_t avail_in, ring_buffer_size_t avail_out) {
+  int16_t buf[Unit::kChunkSize];
+  ring_buffer_size_t avail;
+
+  // Feed playback data into AEC
+  if (avail_out >= Unit::kChunkSize) {
+    avail = PaUtil_ReadRingBuffer(&aec_.out, buf, Unit::kChunkSize);
+    ASSERT(avail == Unit::kChunkSize, "Read less than expected");
+    ASSERT(0 == WebRtcAec_BufferFarend(aec_.handle, buf, Unit::kChunkSize),
+           "Failed to queue AEC far end");
+  }
+
+  if ((size_t) avail_in >= ARRAY_SIZE(buf)) {
+    // Feed capture data into AEC
+    avail = PaUtil_ReadRingBuffer(&aec_.in, buf, ARRAY_SIZE(buf));
+    ASSERT(avail == ARRAY_SIZE(buf), "Read less than expected");
+
+    int16_t lo[ARRAY_SIZE(buf) / 2];
+    int16_t hi[ARRAY_SIZE(lo)];
+
+    // Split signal
+    WebRtcSpl_AnalysisQMF(buf,
+                          ARRAY_SIZE(buf),
+                          lo,
+                          hi,
+                          filters_.a_lo,
+                          filters_.a_hi);
+
+    // Apply AEC
+    ASSERT(0 == WebRtcAec_Process(aec_.handle,
+                                  lo,
+                                  hi,
+                                  lo,
+                                  hi,
+                                  ARRAY_SIZE(lo),
+                                  0,
+                                  0),
+           "Failed to queue AEC near end");
+
+    // Apply NS
+    ASSERT(0 == WebRtcNs_Process(ns_, lo, hi, lo, hi),
+           "Failed to apply NS");
+
+    // Join signal
+    WebRtcSpl_SynthesisQMF(lo,
+                           hi,
+                           ARRAY_SIZE(lo),
+                           buf,
+                           filters_.s_lo,
+                           filters_.s_hi);
+
+    // Write it out
+    PaUtil_WriteRingBuffer(&io_.in, buf, ARRAY_SIZE(buf));
   }
 }
 
