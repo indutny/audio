@@ -46,17 +46,11 @@ void Unit::Init() {
            "Failed to initialize AEC");
   }
 
-  // Add some latency
-  static int16_t latency[kChunkSize];
-  for (size_t i = 0; i < kChannelCount; i++) {
-    PaUtil_WriteRingBuffer(&ring_out_[i],
-                           latency,
-                           ARRAY_SIZE(latency));
-  }
-
   // Initialize QMF filter states
-  memset(filt1_, 0, sizeof(filt1_));
-  memset(filt2_, 0, sizeof(filt2_));
+  memset(filters_.a_lo, 0, sizeof(filters_.a_lo));
+  memset(filters_.a_hi, 0, sizeof(filters_.a_hi));
+  memset(filters_.s_lo, 0, sizeof(filters_.s_lo));
+  memset(filters_.s_hi, 0, sizeof(filters_.s_hi));
 
   // Initialize AEC thread
   ASSERT(0 == uv_sem_init(&aec_sem_, 0), "uv_sem_init");
@@ -173,7 +167,7 @@ void Unit::RenderOutput(size_t channel, int16_t* out, size_t size) {
 
   // Zero-ify rest
   for (size_t i = avail; i < size; i++)
-    out[i] = out[i - avail];
+    out[i] = 0;
 
   // Notify AEC thread about write
   PaUtil_WriteRingBuffer(&aec_out_[channel], out, size);
@@ -217,37 +211,35 @@ void Unit::DoAEC() {
       avail = PaUtil_ReadRingBuffer(&aec_in_[i], buf, ARRAY_SIZE(buf));
       ASSERT(avail == ARRAY_SIZE(buf), "Read less than expected");
 
-      int16_t in_l[ARRAY_SIZE(buf) / 2];
-      int16_t in_h[ARRAY_SIZE(in_l)];
-      int16_t out_l[ARRAY_SIZE(in_l)];
-      int16_t out_h[ARRAY_SIZE(in_l)];
+      int16_t lo[ARRAY_SIZE(buf) / 2];
+      int16_t hi[ARRAY_SIZE(lo)];
 
       // Split signal
       WebRtcSpl_AnalysisQMF(buf,
                             ARRAY_SIZE(buf),
-                            in_l,
-                            in_h,
-                            filt1_[i],
-                            filt2_[i]);
+                            lo,
+                            hi,
+                            filters_.a_lo[i],
+                            filters_.a_hi[i]);
 
       // Apply AEC
       ASSERT(0 == WebRtcAec_Process(aec_[i],
-                                    in_l,
-                                    in_h,
-                                    out_l,
-                                    out_h,
-                                    ARRAY_SIZE(in_l),
+                                    lo,
+                                    hi,
+                                    lo,
+                                    hi,
+                                    ARRAY_SIZE(lo),
                                     0,
-                                    kChunkSize),
+                                    0),
              "Failed to queue AEC near end");
 
       // Join signal
-      WebRtcSpl_SynthesisQMF(out_l,
-                             out_h,
-                             ARRAY_SIZE(out_l),
+      WebRtcSpl_SynthesisQMF(lo,
+                             hi,
+                             ARRAY_SIZE(lo),
                              buf,
-                             filt1_[i],
-                             filt2_[i]);
+                             filters_.s_lo[i],
+                             filters_.s_hi[i]);
 
       // Write it out
       PaUtil_WriteRingBuffer(&ring_in_[i], buf, ARRAY_SIZE(buf));

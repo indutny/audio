@@ -62,8 +62,12 @@ class Unit : public node::ObjectWrap {
 
   // AEC
   void* aec_[kChannelCount];
-  int32_t filt1_[kChannelCount][6];
-  int32_t filt2_[kChannelCount][6];
+  struct {
+    int32_t a_lo[kChannelCount][6];
+    int32_t a_hi[kChannelCount][6];
+    int32_t s_lo[kChannelCount][6];
+    int32_t s_hi[kChannelCount][6];
+  } filters_;
   uv_sem_t aec_sem_;
   uv_async_t* aec_async_;
   uv_thread_t aec_thread_;
