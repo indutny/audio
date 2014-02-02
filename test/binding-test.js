@@ -5,10 +5,10 @@ var Unit = audio.Unit;
 
 describe('Audio binding', function() {
   it('should work', function(cb) {
-    var u = new Unit(44100.0);
+    var u = new Unit();
 
     u.start();
-    u.queueForPlayback(new Buffer(1024));
+    u.queueForPlayback(0, new Buffer(1024));
     setTimeout(function() {
       u.stop();
     }, 5000);
