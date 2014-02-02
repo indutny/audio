@@ -29,6 +29,38 @@
       "aec/echo_cancellation.c",
     ],
   }, {
+    "target_name": "ns",
+    "type": "<(library)",
+    "dependencies": [
+      "signal_processing",
+      "webrtc_common",
+    ],
+    "direct_dependent_settings": {
+      "include_dirs": [ "." ],
+    },
+    "include_dirs": [ "." ],
+    "sources": [
+      "ns/noise_suppression.c",
+      "ns/noise_suppression_x.c",
+      "ns/ns_core.c",
+      "ns/nsx_core.c",
+      "ns/nsx_core_c.c",
+    ],
+    "conditions": [
+      ["target_arch == 'mips'", {
+        "sources": [
+          "ns/nsx_core_mips.c",
+        ],
+      }],
+      ["target_arch == 'arm'", {
+        "sources": [
+          "ns/nsx_core_neon.c",
+          "ns/nsx_core_neon.S",
+          "ns/nsx_core_neon_offsets.c",
+        ],
+      }],
+    ],
+  }, {
     "target_name": "signal_processing",
     "type": "<(library)",
     "dependencies": [ "webrtc_common" ],
@@ -109,6 +141,7 @@
       "webrtc/cpu_features.cc",
       "webrtc/delay_estimator.c",
       "webrtc/delay_estimator_wrapper.c",
+      "webrtc/fft4g.c",
       "webrtc/ring_buffer.c",
     ],
   }]

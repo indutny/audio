@@ -3,6 +3,7 @@
 
 #include "node.h"
 #include "node_object_wrap.h"
+#include "ns/include/noise_suppression.h"
 #include "pa_ringbuffer.h"
 #include "uv.h"
 
@@ -40,8 +41,6 @@ class Unit : public node::ObjectWrap {
   static const int kChannelCount = 2;
 
   static v8::Handle<v8::Value> New(const v8::Arguments &args);
-  static v8::Handle<v8::Value> Start(const v8::Arguments &args);
-  static v8::Handle<v8::Value> Stop(const v8::Arguments &args);
   static v8::Handle<v8::Value> QueueForPlayback(const v8::Arguments &args);
 
   void CommitInput(size_t channel, const int16_t* in, size_t size);
@@ -72,6 +71,9 @@ class Unit : public node::ObjectWrap {
   uv_async_t* aec_async_;
   uv_thread_t aec_thread_;
   volatile bool destroying_;
+
+  // NS
+  NsHandle* ns_[kChannelCount];
 };
 
 }  // namespace audio

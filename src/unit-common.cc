@@ -29,6 +29,7 @@ void Unit::Init() {
   if (out_count > kChannelCount)
     out_count = kChannelCount;
 
+  // Initialize buffers
   for (size_t i = 0; i < ARRAY_SIZE(rings); i++) {
     for (size_t j = 0; j < kChannelCount; j++) {
       PaUtil_InitializeRingBuffer(&rings[i][j],
@@ -39,11 +40,16 @@ void Unit::Init() {
   }
 
   for (size_t i = 0; i < kChannelCount; i++) {
+    // Initailize AEC
     ASSERT(0 == WebRtcAec_Create(&aec_[i]), "Failed to create AEC");
     ASSERT(0 == WebRtcAec_Init(aec_[i],
                                kSampleRate,
                                static_cast<int32_t>(GetHWSampleRate(kOutput))),
            "Failed to initialize AEC");
+
+    // Initialize NS
+    ASSERT(0 == WebRtcNs_Create(&ns_[i]), "Failed to create NS");
+    ASSERT(0 == WebRtcNs_Init(ns_[i], kSampleRate / 2), "Failed to init NS");
   }
 
   // Initialize QMF filter states
@@ -97,9 +103,7 @@ void Unit::Initialize(Handle<Object> target) {
   Local<FunctionTemplate> tpl = FunctionTemplate::New(Unit::New);
   tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
-  NODE_SET_PROTOTYPE_METHOD(tpl, "start", Unit::Start);
-  NODE_SET_PROTOTYPE_METHOD(tpl, "stop", Unit::Stop);
-  NODE_SET_PROTOTYPE_METHOD(tpl, "queueForPlayback", Unit::QueueForPlayback);
+  NODE_SET_PROTOTYPE_METHOD(tpl, "play", Unit::QueueForPlayback);
 
   target->Set(String::NewSymbol("Unit"), tpl->GetFunction());
 }
@@ -112,26 +116,6 @@ Handle<Value> Unit::New(const Arguments &args) {
   unit->Wrap(args.This());
 
   return scope.Close(args.This());
-}
-
-
-Handle<Value> Unit::Start(const Arguments &args) {
-  HandleScope scope;
-  Unit* unit = ObjectWrap::Unwrap<Unit>(args.This());
-
-  unit->Start();
-
-  return scope.Close(Undefined());
-}
-
-
-Handle<Value> Unit::Stop(const Arguments &args) {
-  HandleScope scope;
-  Unit* unit = ObjectWrap::Unwrap<Unit>(args.This());
-
-  unit->Stop();
-
-  return scope.Close(Undefined());
 }
 
 
@@ -177,6 +161,7 @@ void Unit::RenderOutput(size_t channel, int16_t* out, size_t size) {
 void Unit::AECThread(void* arg) {
   Unit* unit = reinterpret_cast<Unit*>(arg);
 
+  unit->Start();
   while (true) {
     uv_sem_wait(&unit->aec_sem_);
 
@@ -185,6 +170,7 @@ void Unit::AECThread(void* arg) {
 
     unit->DoAEC();
   }
+  unit->Stop();
 }
 
 
@@ -232,6 +218,10 @@ void Unit::DoAEC() {
                                     0,
                                     0),
              "Failed to queue AEC near end");
+
+      // Apply NS
+      ASSERT(0 == WebRtcNs_Process(ns_[i], lo, hi, lo, hi),
+             "Failed to apply NS");
 
       // Join signal
       WebRtcSpl_SynthesisQMF(lo,
