@@ -171,10 +171,6 @@ void PlatformUnit::Stop() {
 }
 
 
-void PlatformUnit::QueueForPlayback(const unsigned char* data, size_t size) {
-}
-
-
 size_t PlatformUnit::GetChannelCount(Unit::Side side) {
   if (side == kInput)
     return in_channels_;
@@ -237,7 +233,7 @@ OSStatus PlatformUnit::InputCallback(void* arg,
     unit->CommitInput(i, data, frame_count);
   }
 
-  unit->Flush();
+  unit->FlushInput();
 
   return noErr;
 }
@@ -259,8 +255,6 @@ OSStatus PlatformUnit::RenderCallback(void* arg,
                        reinterpret_cast<int16_t*>(buf->mData),
                        buf->mDataByteSize / kSampleSize);
   }
-
-  unit->Flush();
 
   return noErr;
 }

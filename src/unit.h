@@ -4,6 +4,7 @@
 #include "node.h"
 #include "node_object_wrap.h"
 #include "pa_ringbuffer.h"
+#include "uv.h"
 
 #include <stdint.h>
 
@@ -24,7 +25,6 @@ class Unit : public node::ObjectWrap {
 
   virtual void Start() = 0;
   virtual void Stop() = 0;
-  virtual void QueueForPlayback(const unsigned char* data, size_t size) = 0;
   virtual size_t GetChannelCount(Side side) = 0;
   virtual double GetHWSampleRate(Side side) = 0;
 
@@ -33,10 +33,10 @@ class Unit : public node::ObjectWrap {
   inline void on_incoming(IncomingCallback cb) { on_incoming_ = cb; }
 
  protected:
-  static const int kSampleRate = 8000;
+  static const int kSampleRate = 16000;
   static const int kSampleSize = sizeof(int16_t);
   static const int kChunkSize = kSampleRate / 100;
-  static const int kBufferCapacity = 2048;  // in samples
+  static const int kBufferCapacity = 16 * 1024;  // in samples
   static const int kChannelCount = 2;
 
   static v8::Handle<v8::Value> New(const v8::Arguments &args);
@@ -45,12 +45,13 @@ class Unit : public node::ObjectWrap {
   static v8::Handle<v8::Value> QueueForPlayback(const v8::Arguments &args);
 
   void CommitInput(size_t channel, const int16_t* in, size_t size);
+  void FlushInput();
   void RenderOutput(size_t channel, int16_t* out, size_t size);
-  void Flush();
 
   // AEC Thread
   static void AECThread(void* arg);
   void DoAEC();
+  static void AsyncCb(uv_async_t* handle, int status);
 
   IncomingCallback on_incoming_;
 
@@ -64,6 +65,7 @@ class Unit : public node::ObjectWrap {
   int32_t filt1_[kChannelCount][6];
   int32_t filt2_[kChannelCount][6];
   uv_sem_t aec_sem_;
+  uv_async_t* aec_async_;
   uv_thread_t aec_thread_;
   volatile bool destroying_;
 };

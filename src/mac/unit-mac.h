@@ -16,7 +16,6 @@ class PlatformUnit : public Unit {
 
   void Start();
   void Stop();
-  void QueueForPlayback(const unsigned char* data, size_t size);
   size_t GetChannelCount(Side side);
   double GetHWSampleRate(Side side);
 
