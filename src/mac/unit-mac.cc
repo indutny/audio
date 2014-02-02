@@ -153,6 +153,9 @@ PlatformUnit::PlatformUnit() : in_channels_(0), out_channels_(0) {
 
 
 PlatformUnit::~PlatformUnit() {
+  // Stop AU
+  Stop();
+
   AudioComponentInstanceDispose(unit_);
   DestroyBuffer(buffer_);
   buffer_ = NULL;

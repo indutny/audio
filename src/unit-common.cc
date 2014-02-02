@@ -66,6 +66,9 @@ void Unit::Init() {
          "uv_async_init");
   ASSERT(0 == uv_thread_create(&aec_thread_, AECThread, this),
          "uv_thread_create");
+
+  // Start AU
+  Start();
 }
 
 
@@ -161,7 +164,6 @@ void Unit::RenderOutput(size_t channel, int16_t* out, size_t size) {
 void Unit::AECThread(void* arg) {
   Unit* unit = reinterpret_cast<Unit*>(arg);
 
-  unit->Start();
   while (true) {
     uv_sem_wait(&unit->aec_sem_);
 
@@ -170,7 +172,6 @@ void Unit::AECThread(void* arg) {
 
     unit->DoAEC();
   }
-  unit->Stop();
 }
 
 
