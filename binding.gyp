@@ -16,6 +16,7 @@
     "include_dirs": [ "src" ],
     "sources": [
       "src/audio.cc",
+      "src/channel.cc",
       "src/unit-common.cc",
     ],
     "conditions": [
