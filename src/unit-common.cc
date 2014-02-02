@@ -195,27 +195,36 @@ void Unit::AECThread(void* arg) {
 
 
 void Unit::DoAEC() {
-  int16_t buf[2 * kChunkSize];
-  int16_t in_l[kChunkSize];
-  int16_t in_h[kChunkSize];
-  int16_t out_l[kChunkSize];
-  int16_t out_h[kChunkSize];
+  int16_t buf[kChunkSize];
+  ring_buffer_size_t avail_out = PaUtil_GetRingBufferReadAvailable(
+      &aec_out_[GetChannelCount(kOutput) - 1]);
+  ring_buffer_size_t avail_in = PaUtil_GetRingBufferReadAvailable(
+      &aec_in_[GetChannelCount(kInput)- 1]);
 
   for (size_t i = 0; i < kChannelCount; i++) {
+    ring_buffer_size_t avail;
+
     // Feed playback data into AEC
-    if (PaUtil_GetRingBufferReadAvailable(&aec_out_[i]) >= kChunkSize) {
-      PaUtil_ReadRingBuffer(&aec_out_[i], buf, kChunkSize);
+    if (avail_out >= kChunkSize) {
+      avail = PaUtil_ReadRingBuffer(&aec_out_[i], buf, kChunkSize);
+      ASSERT(avail == kChunkSize, "Read less than expected");
       ASSERT(0 == WebRtcAec_BufferFarend(aec_[i], buf, kChunkSize),
              "Failed to queue AEC far end");
     }
 
-    if (PaUtil_GetRingBufferReadAvailable(&aec_in_[i]) >= 2 * kChunkSize) {
+    if ((size_t) avail_in >= ARRAY_SIZE(buf)) {
       // Feed capture data into AEC
-      PaUtil_ReadRingBuffer(&aec_in_[i], buf, 2 * kChunkSize);
+      avail = PaUtil_ReadRingBuffer(&aec_in_[i], buf, ARRAY_SIZE(buf));
+      ASSERT(avail == ARRAY_SIZE(buf), "Read less than expected");
+
+      int16_t in_l[ARRAY_SIZE(buf) / 2];
+      int16_t in_h[ARRAY_SIZE(in_l)];
+      int16_t out_l[ARRAY_SIZE(in_l)];
+      int16_t out_h[ARRAY_SIZE(in_l)];
 
       // Split signal
       WebRtcSpl_AnalysisQMF(buf,
-                            2 * kChunkSize,
+                            ARRAY_SIZE(buf),
                             in_l,
                             in_h,
                             filt1_[i],
@@ -227,7 +236,7 @@ void Unit::DoAEC() {
                                     in_h,
                                     out_l,
                                     out_h,
-                                    kChunkSize,
+                                    ARRAY_SIZE(in_l),
                                     0,
                                     kChunkSize),
              "Failed to queue AEC near end");
@@ -235,13 +244,13 @@ void Unit::DoAEC() {
       // Join signal
       WebRtcSpl_SynthesisQMF(out_l,
                              out_h,
-                             kChunkSize,
+                             ARRAY_SIZE(out_l),
                              buf,
                              filt1_[i],
                              filt2_[i]);
 
       // Write it out
-      PaUtil_WriteRingBuffer(&ring_in_[i], buf, 2 * kChunkSize);
+      PaUtil_WriteRingBuffer(&ring_in_[i], buf, ARRAY_SIZE(buf));
     }
   }
 
@@ -258,30 +267,22 @@ void Unit::AsyncCb(uv_async_t* handle, int status) {
   Unit* unit = reinterpret_cast<Unit*>(handle->data);
 
   size_t channels = unit->GetChannelCount(kInput);
+  int16_t buf[kChunkSize];
 
-  for (size_t i = 0; i < channels; i++) {
-    void* data[2];
-    ring_buffer_size_t size[2];
-    ring_buffer_size_t avail;
+  while (PaUtil_GetRingBufferReadAvailable(
+             &unit->ring_in_[channels - 1]) > 0) {
+    for (size_t i = 0; i < channels; i++) {
+      ring_buffer_size_t avail;
 
-    avail = PaUtil_GetRingBufferReadRegions(&unit->ring_in_[i],
-                                            kChunkSize * 2,
-                                            &data[0],
-                                            &size[0],
-                                              &data[1],
-                                          &size[1]);
-    for (size_t j = 0; j < ARRAY_SIZE(data); j++) {
-      if (size[j] == 0)
-        continue;
+      avail = PaUtil_ReadRingBuffer(&unit->ring_in_[i], buf, ARRAY_SIZE(buf));
+      ASSERT(avail == ARRAY_SIZE(buf), "Read less than expected");
 
-      Buffer* raw = Buffer::New(reinterpret_cast<char*>(data[j]), size[j]);
+      Buffer* raw = Buffer::New(reinterpret_cast<char*>(buf), sizeof(buf));
       Local<Value> buf = Local<Value>::New(raw->handle_);
 
       Local<Value> argv[] = { Integer::New(i), buf };
       MakeCallback(unit->handle_, "oninput", ARRAY_SIZE(argv), argv);
     }
-
-    PaUtil_AdvanceRingBufferReadIndex(&unit->ring_in_[i], avail);
   }
 }
 

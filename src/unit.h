@@ -35,7 +35,7 @@ class Unit : public node::ObjectWrap {
  protected:
   static const int kSampleRate = 16000;
   static const int kSampleSize = sizeof(int16_t);
-  static const int kChunkSize = kSampleRate / 100;
+  static const int kChunkSize = 160;
   static const int kBufferCapacity = 16 * 1024;  // in samples
   static const int kChannelCount = 2;
 
