@@ -3,11 +3,12 @@
 #include "unit.h"
 
 #include "aec/include/echo_cancellation.h"
+#include "agc/include/gain_control.h"
 #include "signal_processing/include/signal_processing_library.h"
 
 namespace audio {
 
-Channel::Channel() : ns_(NULL) {
+Channel::Channel() : has_echo_(false), agc_(NULL), agc_level_(0), ns_(NULL) {
   // Clear filters for QMF
   memset(filters_.a_lo, 0, sizeof(filters_.a_lo));
   memset(filters_.a_hi, 0, sizeof(filters_.a_hi));
@@ -35,6 +36,11 @@ void Channel::Init(Unit* unit) {
       static_cast<int32_t>(unit->GetHWSampleRate(Unit::kOutput)));
   ASSERT(err == 0, "Failed to initialize AEC");
 
+  // Initialize AGC
+  ASSERT(0 == WebRtcAgc_Create(&agc_), "Failed to create AGC");
+  ASSERT(0 == WebRtcAgc_Init(agc_, 0, 255, 1, Unit::kSampleRate / 2),
+         "Failed to init AGC");
+
   // Initialize NS
   ASSERT(0 == WebRtcNs_Create(&ns_), "Failed to create NS");
   ASSERT(0 == WebRtcNs_Init(ns_, Unit::kSampleRate / 2), "Failed to init NS");
@@ -50,6 +56,9 @@ Channel::~Channel() {
 
   ASSERT(0 == WebRtcAec_Free(aec_.handle), "Failed to destroy AEC");
   aec_.handle = NULL;
+
+  ASSERT(0 == WebRtcAgc_Free(agc_), "Faield to destroy AGC");
+  agc_ = NULL;
 
   ASSERT(0 == WebRtcNs_Free(ns_), "Failed to free NS");
   ns_ = NULL;
@@ -84,20 +93,10 @@ void Channel::Cycle(ring_buffer_size_t avail_in, ring_buffer_size_t avail_out) {
                           filters_.a_lo,
                           filters_.a_hi);
 
-    // Apply AEC
-    ASSERT(0 == WebRtcAec_Process(aec_.handle,
-                                  lo,
-                                  hi,
-                                  lo,
-                                  hi,
-                                  ARRAY_SIZE(lo),
-                                  0,
-                                  0),
-           "Failed to queue AEC near end");
-
-    // Apply NS
-    ASSERT(0 == WebRtcNs_Process(ns_, lo, hi, lo, hi),
-           "Failed to apply NS");
+    PreAGC(lo, hi, ARRAY_SIZE(lo));
+    AEC(lo, hi, ARRAY_SIZE(lo));
+    NS(lo, hi);
+    PostAGC(lo, hi, ARRAY_SIZE(lo));
 
     // Join signal
     WebRtcSpl_SynthesisQMF(lo,
@@ -110,6 +109,45 @@ void Channel::Cycle(ring_buffer_size_t avail_in, ring_buffer_size_t avail_out) {
     // Write it out
     PaUtil_WriteRingBuffer(&io_.in, buf, ARRAY_SIZE(buf));
   }
+}
+
+
+void Channel::AEC(int16_t* lo, int16_t* hi, size_t len) {
+  ASSERT(0 == WebRtcAec_Process(aec_.handle, lo, hi, lo, hi, len, 0, 0),
+         "Failed to queue AEC near end");
+
+  int status = 0;
+  ASSERT(0 == WebRtcAec_get_echo_status(aec_.handle, &status),
+         "Failed to fetch AEC status");
+  has_echo_ = status == 1;
+}
+
+
+void Channel::PreAGC(int16_t* lo, int16_t* hi, size_t len) {
+  ASSERT(0 == WebRtcAgc_AddMic(agc_, lo, hi, len), "Failed to add AGC mic");
+}
+
+
+void Channel::PostAGC(int16_t* lo, int16_t* hi, size_t len) {
+  uint8_t wrn;
+
+  int err = WebRtcAgc_Process(agc_,
+                              lo,
+                              hi,
+                              len,
+                              lo,
+                              hi,
+                              agc_level_,
+                              &agc_level_,
+                              has_echo_,
+                              &wrn);
+  ASSERT(0 == err, "Failed to apply AGC");
+}
+
+
+void Channel::NS(int16_t* lo, int16_t* hi) {
+  ASSERT(0 == WebRtcNs_Process(ns_, lo, hi, lo, hi),
+         "Failed to apply NS");
 }
 
 }  // namespace audio

@@ -5,6 +5,7 @@
 #include "pa_ringbuffer.h"
 
 #include <stdint.h>
+#include <sys/types.h>
 
 namespace audio {
 
@@ -31,6 +32,14 @@ class Channel {
     PaUtilRingBuffer out;
   } io_;
 
+ protected:
+  static const int kBufferCapacity = 16 * 1024;  // in samples
+
+  void AEC(int16_t* lo, int16_t* hi, size_t len);
+  void PreAGC(int16_t* lo, int16_t* hi, size_t len);
+  void PostAGC(int16_t* lo, int16_t* hi, size_t len);
+  void NS(int16_t* lo, int16_t* hi);
+
   // AEC
   struct {
     int32_t a_lo[6];
@@ -38,12 +47,14 @@ class Channel {
     int32_t s_lo[6];
     int32_t s_hi[6];
   } filters_;
+  bool has_echo_;
+
+  // AGC
+  void* agc_;
+  int32_t agc_level_;
 
   // NS
   NsHandle* ns_;
-
- protected:
-  static const int kBufferCapacity = 16 * 1024;  // in samples
 };
 
 } // namespace audio

@@ -7,6 +7,7 @@
 #include "channel.h"
 
 #include <stdint.h>
+#include <sys/types.h>
 
 namespace audio {
 

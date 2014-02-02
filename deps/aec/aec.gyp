@@ -29,6 +29,21 @@
       "aec/echo_cancellation.c",
     ],
   }, {
+    "target_name": "agc",
+    "type": "<(library)",
+    "dependencies": [
+      "signal_processing",
+      "webrtc_common",
+    ],
+    "direct_dependent_settings": {
+      "include_dirs": [ "." ],
+    },
+    "include_dirs": [ "." ],
+    "sources": [
+      "agc/analog_agc.c",
+      "agc/digital_agc.c",
+    ],
+  }, {
     "target_name": "ns",
     "type": "<(library)",
     "dependencies": [
