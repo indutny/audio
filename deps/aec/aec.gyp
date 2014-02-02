@@ -1,4 +1,14 @@
 {
+  "target_defaults": {
+    "conditions": [
+      ["OS == 'mac'", {
+        "defines": [ "WEBRTC_MAC" ],
+      }],
+      ["OS == 'linux'", {
+        "defines": [ "WEBRTC_LINUX" ],
+      }],
+    ],
+  },
   "targets": [{
     "target_name": "aec",
     "type": "<(library)",

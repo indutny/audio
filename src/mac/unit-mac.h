@@ -18,7 +18,7 @@ class PlatformUnit : public Unit {
   void Stop();
   void QueueForPlayback(const unsigned char* data, size_t size);
   size_t GetChannelCount(Side side);
-  double GetHWSampleRate(Unit::Side side);
+  double GetHWSampleRate(Side side);
 
  protected:
   static AudioDeviceID GetDevice();
@@ -26,9 +26,12 @@ class PlatformUnit : public Unit {
   static AudioDeviceID GetPlugin();
   static CFMutableDictionaryRef GetAggregateDictionary();
   static CFStringRef GetDeviceUID(AudioDeviceID device);
+  static void SetHWSampleRate(Side side, double sample_rate);
   static void AddSubdevices(AudioDeviceID aggr,
                             AudioDeviceID in,
                             AudioDeviceID out);
+  AudioBufferList* AllocateBuffer(Side side);
+  void DestroyBuffer(AudioBufferList* buffer);
 
   static OSStatus InputCallback(void* arg,
                                 AudioUnitRenderActionFlags* flags,

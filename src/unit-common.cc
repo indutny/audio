@@ -133,57 +133,17 @@ Handle<Value> Unit::QueueForPlayback(const Arguments &args) {
 }
 
 
-int16_t* Unit::PrepareInput(size_t channel, size_t* size) {
-  static int16_t buf[1024];
-
-  // If channel is too high or we don't have enough space to process input -
-  // just read everything into a static buffer
-  if (channel >= ARRAY_SIZE(aec_in_) ||
-      0 == PaUtil_GetRingBufferWriteAvailable(&aec_in_[channel])) {
-    return buf;
-  }
-
-  void* data1;
-  ring_buffer_size_t in_len1;
-  void* data2;
-  ring_buffer_size_t in_len2;
-  PaUtil_GetRingBufferWriteRegions(&aec_in_[channel],
-                                   *size,
-                                   &data1,
-                                   &in_len1,
-                                   &data2,
-                                   &in_len2);
-  *size = in_len1;
-
-  // NOTE: Second buffer is intentionally ignored
-  return reinterpret_cast<int16_t*>(data1);
-}
-
-
-void Unit::CommitInput(size_t size) {
+void Unit::CommitInput(size_t channel, const int16_t* in, size_t size) {
+  // TODO(indutny): Support output/input channel count mismatch
   // Already full, ignore
-  if (0 == PaUtil_GetRingBufferWriteAvailable(&aec_in_[0]))
+  if (0 == PaUtil_WriteRingBuffer(&aec_in_[channel], in, size))
     return;
-
-  for (size_t i = 0; i < ARRAY_SIZE(aec_in_); i++) {
-    assert(i < ARRAY_SIZE(aec_in_));
-
-    // Advance buffer
-    PaUtil_AdvanceRingBufferWriteIndex(&aec_in_[i], size);
-  }
-
-  // Notify AEC thread about read
-  uv_sem_post(&aec_sem_);
 }
 
 
 void Unit::RenderOutput(size_t channel, int16_t* out, size_t size) {
-  ring_buffer_size_t avail;
-  if (channel >= ARRAY_SIZE(ring_out_)) {
-    avail = 0;
-  } else {
-    avail = PaUtil_ReadRingBuffer(&ring_out_[channel], out, size);
-  }
+  ring_buffer_size_t avail =
+      PaUtil_ReadRingBuffer(&ring_out_[channel], out, size);
 
   // Zero-ify rest
   for (size_t i = avail; i < size; i++)
@@ -191,6 +151,10 @@ void Unit::RenderOutput(size_t channel, int16_t* out, size_t size) {
 
   // Notify AEC thread about write
   PaUtil_WriteRingBuffer(&aec_out_[channel], out, size);
+}
+
+
+void Unit::Flush() {
   uv_sem_post(&aec_sem_);
 }
 
@@ -209,65 +173,51 @@ void Unit::AECThread(void* arg) {
 
 
 void Unit::DoAEC() {
+  int16_t buf[kChunkSize];
   int16_t in_l[kChunkSize];
   int16_t in_h[kChunkSize];
   int16_t out_l[kChunkSize];
   int16_t out_h[kChunkSize];
 
   for (size_t i = 0; i < kChannelCount; i++) {
-    int16_t* data1;
-    ring_buffer_size_t in_len1;
-    void* data2;
-    ring_buffer_size_t in_len2;
-
     // Feed playback data into AEC
-    while (PaUtil_GetRingBufferReadAvailable(&aec_in_[i]) >= kChunkSize ||
-           PaUtil_GetRingBufferReadAvailable(&aec_out_[i]) >= kChunkSize) {
-      if (PaUtil_GetRingBufferReadAvailable(&aec_out_[i]) >= kChunkSize) {
-        PaUtil_GetRingBufferReadRegions(&aec_out_[i],
-                                        kChunkSize,
-                                        reinterpret_cast<void**>(&data1),
-                                        &in_len1,
-                                        &data2,
-                                        &in_len2);
+    if (PaUtil_GetRingBufferReadAvailable(&aec_out_[i]) >= kChunkSize) {
+      PaUtil_ReadRingBuffer(&aec_out_[i], buf, ARRAY_SIZE(buf));
+      ASSERT(0 == WebRtcAec_BufferFarend(aec_[i], buf, ARRAY_SIZE(buf)),
+             "Failed to queue AEC far end");
+    }
 
-        ASSERT(0 == WebRtcAec_BufferFarend(aec_[i], data1, in_len1),
-               "Failed to queue AEC far end");
-      }
+    if (PaUtil_GetRingBufferReadAvailable(&aec_in_[i]) >= kChunkSize) {
+      // Feed capture data into AEC
+      PaUtil_ReadRingBuffer(&aec_in_[i], buf, ARRAY_SIZE(buf));
 
-      if (PaUtil_GetRingBufferReadAvailable(&aec_in_[i]) >= kChunkSize) {
-        // Feed capture data into AEC
-        PaUtil_GetRingBufferReadRegions(&aec_in_[i],
-                                        kChunkSize,
-                                        reinterpret_cast<void**>(&data1),
-                                        &in_len1,
-                                        &data2,
-                                        &in_len2);
-        ASSERT(in_len1 == kChunkSize, "Odd read");
+      // Split signal
+      WebRtcSpl_AnalysisQMF(buf,
+                            ARRAY_SIZE(buf),
+                            in_l,
+                            in_h,
+                            filt1_[i],
+                            filt2_[i]);
 
-        // Split signal
-        WebRtcSpl_AnalysisQMF(data1, in_len1, in_l, in_h, filt1_[i], filt2_[i]);
+      // Apply AEC
+      ASSERT(0 == WebRtcAec_Process(aec_[i],
+                                    in_l,
+                                    in_h,
+                                    out_l,
+                                    out_h,
+                                    kChunkSize,
+                                    0,
+                                    0),
+             "Failed to queue AEC near end");
 
-        // Apply AEC
-        ASSERT(0 == WebRtcAec_Process(aec_[i],
-                                      in_l,
-                                      in_h,
-                                      out_l,
-                                      out_h,
-                                      kChunkSize,
-                                      0,
-                                      0),
-               "Failed to queue AEC near end");
-
-        // Join signal
-        int16_t out[1024];
-        WebRtcSpl_SynthesisQMF(out_l,
-                               out_h,
-                               kChunkSize,
-                               out,
-                               filt1_[i],
-                               filt2_[i]);
-      }
+      // Join signal
+      int16_t out[1024];
+      WebRtcSpl_SynthesisQMF(out_l,
+                             out_h,
+                             kChunkSize,
+                             out,
+                             filt1_[i],
+                             filt2_[i]);
     }
   }
 }

@@ -36,19 +36,17 @@ class Unit : public node::ObjectWrap {
   static const int kSampleRate = 8000;
   static const int kSampleSize = sizeof(int16_t);
   static const int kChunkSize = kSampleRate / 100;
-  static const int kBufferCapacity = 1024;  // in samples
+  static const int kBufferCapacity = 2048;  // in samples
   static const int kChannelCount = 2;
-  static const int kAECFrameSize = 512;
-  static const int kAECBufferSize = 8192;
 
   static v8::Handle<v8::Value> New(const v8::Arguments &args);
   static v8::Handle<v8::Value> Start(const v8::Arguments &args);
   static v8::Handle<v8::Value> Stop(const v8::Arguments &args);
   static v8::Handle<v8::Value> QueueForPlayback(const v8::Arguments &args);
 
-  int16_t* PrepareInput(size_t channel, size_t* size);
-  void CommitInput(size_t size);
+  void CommitInput(size_t channel, const int16_t* in, size_t size);
   void RenderOutput(size_t channel, int16_t* out, size_t size);
+  void Flush();
 
   // AEC Thread
   static void AECThread(void* arg);
